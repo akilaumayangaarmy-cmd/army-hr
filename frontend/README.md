@@ -27,9 +27,10 @@ npm run dev
 The app will open automatically at `http://localhost:5173`.
 
 ## Backend API
-The backend reads uploaded Excel and CSV files in memory and returns the rows from
-the first worksheet as JSON. It does not store uploaded files or use a database.
-Uploads are limited to 100 MB.
+The backend reads uploaded Excel and CSV files in memory and upserts their rows
+into the configured Oracle table using `OLD_ID` as the unique key. Matching
+members are updated, new `OLD_ID` values are inserted, and existing members not
+present in the upload are never deleted. Uploads are limited to 100 MB.
 
 In a second terminal, start the API:
 ```bash
@@ -38,8 +39,11 @@ npm install
 npm run dev
 ```
 The frontend proxies `/api` requests to `http://localhost:3001`.
-`POST /api/upload` accepts a multipart form field named `file` and returns
-`{ "filename": "...", "sheetName": "...", "rows": [...] }`.
+`POST /api/upload` accepts a multipart form field named `file`. The first
+worksheet must contain an `OLD_ID` column with a unique, non-empty value for
+each row. Other headers must match destination-table column names. The endpoint
+returns the parsed rows and a `processed` count after the database transaction
+succeeds.
 
 ## Project Structure
 ```

@@ -45,7 +45,9 @@ export default function App() {
         throw new Error(result.error || "File upload failed.");
       }
       validateData(result.rows);
-      setUploadSuccess(`${result.inserted} records replaced in the database.`);
+      setUploadSuccess(
+        `${result.processed} records processed: existing OLD_IDs updated and new OLD_IDs inserted. Other records were kept.`,
+      );
     } catch (error) {
 
       console.error("Upload error:", error);
@@ -129,14 +131,14 @@ export default function App() {
               <Upload className="mx-auto mb-2 text-army" size={48} />
               <p className="font-medium">Drag & drop an Excel/CSV file here, or click to select</p>
               <p className="text-sm text-gray-500">Maximum file size: 100 MB</p>
-              <p className="text-sm text-gray-500">Expected columns: e_number, name, province, district, regiment, rank, …</p>
-              <p className="mt-2 text-sm text-amber-700">Uploading replaces all existing rows in the destination table.</p>
+              <p className="text-sm text-gray-500">Include the OLD_ID column and the member data columns to import.</p>
+              <p className="mt-2 text-sm text-amber-700">Existing members are updated by OLD_ID; new OLD_IDs are inserted. Other records are never deleted.</p>
             </>
           )}
         </div>
         {loading && (
           <div className="mt-2 flex items-center text-army">
-            <Loader2 className="animate-spin mr-2" /> Uploading and replacing database data…
+            <Loader2 className="animate-spin mr-2" /> Uploading and updating database records…
           </div>
         )}
         {uploadError && (

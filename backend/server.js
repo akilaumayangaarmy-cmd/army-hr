@@ -45,7 +45,7 @@ function quoteIdentifier(identifier) {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
 
-async function replaceTableData(rows) {
+async function upsertTableData(rows) {
   const config = getDatabaseConfig();
   console.log(`Connecting to Oracle database as user "${config.user}" at "${config.connectString}".`);
   let connection;
@@ -76,15 +76,21 @@ async function replaceTableData(rows) {
 
     const columnsByName = new Map(columns.map((column) => [column.toUpperCase(), column]));
     const headers = Object.keys(rows[0]);
+    console.log(headers)
     const insertColumns = headers.map((header) => {
       const column = columnsByName.get(header.trim().toUpperCase());
       if (!column) {
         throw httpError(400, `The uploaded file contains an unknown column: ${header}`);
       }
+      console.log(column)
       return column;
     });
     if (new Set(insertColumns).size !== insertColumns.length) {
       throw httpError(400, "The uploaded file contains duplicate column names.");
+    }
+    const oldIdIndex = insertColumns.findIndex((column) => column.toUpperCase() === "OLD_ID");
+    if (oldIdIndex === -1) {
+      throw httpError(400, 'The uploaded file must contain the "OLD_ID" column.');
     }
 
     const insertData = insertColumns.map((column, index) => {
@@ -147,17 +153,45 @@ async function replaceTableData(rows) {
       throw httpError(400, `The destination column "${column}" uses an unsupported data type.`);
     });
 
+    const oldIds = insertData[oldIdIndex].values.map((value) =>
+      typeof value === "string" ? value.trim() : value,
+    );
+    const seenOldIds = new Set();
+    oldIds.forEach((oldId, index) => {
+      if (oldId == null || (typeof oldId === "string" && oldId === "")) {
+        throw httpError(400, `Row ${index + 2} is missing OLD_ID.`);
+      }
+      const normalizedOldId = String(oldId);
+      if (seenOldIds.has(normalizedOldId)) {
+        throw httpError(400, `The uploaded file contains duplicate OLD_ID "${normalizedOldId}".`);
+      }
+      seenOldIds.add(normalizedOldId);
+    });
+    insertData[oldIdIndex].values = oldIds;
+
     const qualifiedTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
-    const placeholders = insertColumns.map((_, index) => `:${index + 1}`).join(", ");
+    const bindPlaceholders = insertColumns.map((_, index) => `:${index + 1}`);
     const quotedColumns = insertColumns.map(quoteIdentifier).join(", ");
-    const insertSql = `INSERT INTO ${qualifiedTable} (${quotedColumns}) VALUES (${placeholders})`;
+    const sourceColumns = insertColumns
+      .map((column, index) => `${bindPlaceholders[index]} ${quoteIdentifier(column)}`)
+      .join(", ");
+    const updateColumns = insertColumns.filter((_, index) => index !== oldIdIndex);
+    const updateClause = updateColumns.length > 0
+      ? ` WHEN MATCHED THEN UPDATE SET ${updateColumns
+        .map((column) => `target.${quoteIdentifier(column)} = source.${quoteIdentifier(column)}`)
+        .join(", ")}`
+      : "";
+    const upsertSql = `MERGE INTO ${qualifiedTable} target
+      USING (SELECT ${sourceColumns} FROM dual) source
+      ON (target.${quoteIdentifier(insertColumns[oldIdIndex])} = source.${quoteIdentifier(insertColumns[oldIdIndex])})${updateClause}
+      WHEN NOT MATCHED THEN INSERT (${quotedColumns})
+      VALUES (${insertColumns.map((column) => `source.${quoteIdentifier(column)}`).join(", ")})`;
     const bindRows = rows.map((_, rowIndex) => insertData.map((column) => column.values[rowIndex]));
     const bindDefs = insertData.map(({ type, maxSize }) =>
       maxSize === undefined ? { type } : { type, maxSize },
     );
 
-    await connection.execute(`DELETE FROM ${qualifiedTable}`);
-    const result = await connection.executeMany(insertSql, bindRows, { bindDefs, batchErrors: true });
+    const result = await connection.executeMany(upsertSql, bindRows, { bindDefs, batchErrors: true });
 
     if (result.batchErrors && result.batchErrors.length > 0) {
       const samples = result.batchErrors.slice(0, 5).map((batchError) => {
@@ -220,15 +254,15 @@ app.post("/api/upload", upload.single("file"), async (req, res, next) => {
   }
 
   try {
-    await replaceTableData(rows);
-    res.json({ filename: req.file.originalname, sheetName, rows, inserted: rows.length });
+    await upsertTableData(rows);
+    res.json({ filename: req.file.originalname, sheetName, rows, processed: rows.length });
   } catch (error) {
     if (error.status === 400 || error.status === 503) {
       res.status(error.status).json({ error: error.message });
       return;
     }
     console.error("Upload database operation failed:", error.message);
-    next(httpError(500, "Database replacement failed; the existing table data was not changed."));
+    next(httpError(500, "Upload failed; database changes were rolled back."));
   }
 });
 
