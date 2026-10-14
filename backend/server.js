@@ -1,0 +1,265 @@
+const path = require("node:path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+
+const express = require("express");
+const multer = require("multer");
+const XLSX = require("xlsx");
+const oracledb = require("oracledb");
+const app = express();
+const port = process.env.PORT || 3001;
+const allowedExtensions = new Set([".xlsx", ".xls", ".csv"]);
+const tableOwner = "PNRDB_DEV";
+const tableName = "01_Temp_members_master_data";
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    if (!allowedExtensions.has(extension)) {
+      callback(new Error("Only .xlsx, .xls, and .csv files are supported."));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+function httpError(status, message) {
+  return Object.assign(new Error(message), { status });
+}
+
+function getDatabaseConfig() {
+  const { DB_USER, DB_PASSWORD, DB_CONNECT_STRING, DB_HOST, DB_PORT, DB_SERVICE_NAME } = process.env;
+  const connectString = DB_CONNECT_STRING
+    || (DB_HOST && DB_PORT && DB_SERVICE_NAME
+      ? `${DB_HOST}:${DB_PORT}/${DB_SERVICE_NAME}`
+      : "");
+
+  if (!DB_USER || !DB_PASSWORD || !connectString) {
+    throw httpError(503, "Database connection is not configured on the server.");
+  }
+
+  return { user: DB_USER, password: DB_PASSWORD, connectString };
+}
+
+function quoteIdentifier(identifier) {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function replaceTableData(rows) {
+  const config = getDatabaseConfig();
+  console.log(`Connecting to Oracle database as user "${config.user}" at "${config.connectString}".`);
+  let connection;
+
+  try {
+    connection = await oracledb.getConnection(config);
+    const columnsResult = await connection.execute(
+      `SELECT column_name, data_type
+         FROM all_tab_columns
+        WHERE owner = :owner
+          AND table_name = :tableName
+        ORDER BY column_id`,
+      { owner: tableOwner, tableName },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const columnMetadata = new Map(
+      columnsResult.rows.map((row) => [
+        row.COLUMN_NAME,
+        row.DATA_TYPE.toUpperCase().replace(/\(\d+\)/g, ""),
+      ]),
+
+      console.log(`Retrieved ${columnsResult.rows.length} columns from table "${tableOwner}.${tableName}".`)
+    );
+    const columns = [...columnMetadata.keys()];
+    if (columns.length === 0) {
+      throw httpError(500, "The destination table was not found or is not accessible.");
+    }
+
+    const columnsByName = new Map(columns.map((column) => [column.toUpperCase(), column]));
+    const headers = Object.keys(rows[0]);
+    const insertColumns = headers.map((header) => {
+      const column = columnsByName.get(header.trim().toUpperCase());
+      if (!column) {
+        throw httpError(400, `The uploaded file contains an unknown column: ${header}`);
+      }
+      return column;
+    });
+    if (new Set(insertColumns).size !== insertColumns.length) {
+      throw httpError(400, "The uploaded file contains duplicate column names.");
+    }
+
+    const insertData = insertColumns.map((column, index) => {
+      const oracleType = columnMetadata.get(column);
+      const values = rows.map((row) => row[headers[index]]);
+      const emptyToNull = (value) => value === "" || value == null;
+
+      if (["VARCHAR2", "CHAR", "NVARCHAR2", "NCHAR"].includes(oracleType)) {
+        const type = ["NVARCHAR2", "NCHAR"].includes(oracleType)
+          ? oracledb.DB_TYPE_NVARCHAR
+          : oracledb.DB_TYPE_VARCHAR;
+        const normalized = values.map((value) => {
+          if (emptyToNull(value)) return null;
+          if (value instanceof Date) return value.toISOString().slice(0, 10);
+          return String(value);
+        });
+        const maxSize = normalized.reduce(
+          (maximum, value) => Math.max(maximum, value ? Buffer.byteLength(value, "utf8") : 0),
+          1,
+        );
+        return { type, maxSize, values: normalized };
+      }
+      if (["NUMBER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE"].includes(oracleType)) {
+        const normalized = values.map((value) => {
+          if (emptyToNull(value) || (typeof value === "string" && value.trim() === "")) return null;
+          const number = typeof value === "number" ? value : Number(value);
+          if (!Number.isFinite(number)) {
+            if (column.toUpperCase() === "GN_DIVISION_ID") return null;
+            throw httpError(400, `Column "${column}" contains a value that is not numeric.`);
+          }
+          return number;
+        });
+        return { type: oracledb.DB_TYPE_NUMBER, values: normalized };
+      }
+      if (["DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH LOCAL TIME ZONE"].includes(oracleType)) {
+        const type = oracleType === "DATE"
+          ? oracledb.DB_TYPE_DATE
+          : oracleType === "TIMESTAMP WITH TIME ZONE"
+            ? oracledb.DB_TYPE_TIMESTAMP_TZ
+            : oracleType === "TIMESTAMP WITH LOCAL TIME ZONE"
+              ? oracledb.DB_TYPE_TIMESTAMP_LTZ
+              : oracledb.DB_TYPE_TIMESTAMP;
+        const normalized = values.map((value) => {
+          if (emptyToNull(value)) return null;
+          const date = value instanceof Date ? value : new Date(value);
+          if (Number.isNaN(date.getTime())) {
+            throw httpError(400, `Column "${column}" contains a value that is not a valid date.`);
+          }
+          return date;
+        });
+        return { type, values: normalized };
+      }
+      if (["CLOB", "NCLOB"].includes(oracleType)) {
+        const normalized = values.map((value) => (emptyToNull(value) ? null : String(value)));
+        return {
+          type: oracleType === "NCLOB" ? oracledb.DB_TYPE_NCLOB : oracledb.DB_TYPE_CLOB,
+          values: normalized,
+        };
+      }
+      throw httpError(400, `The destination column "${column}" uses an unsupported data type.`);
+    });
+
+    const qualifiedTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
+    const placeholders = insertColumns.map((_, index) => `:${index + 1}`).join(", ");
+    const quotedColumns = insertColumns.map(quoteIdentifier).join(", ");
+    const insertSql = `INSERT INTO ${qualifiedTable} (${quotedColumns}) VALUES (${placeholders})`;
+    const bindRows = rows.map((_, rowIndex) => insertData.map((column) => column.values[rowIndex]));
+    const bindDefs = insertData.map(({ type, maxSize }) =>
+      maxSize === undefined ? { type } : { type, maxSize },
+    );
+
+    await connection.execute(`DELETE FROM ${qualifiedTable}`);
+    const result = await connection.executeMany(insertSql, bindRows, { bindDefs, batchErrors: true });
+
+    if (result.batchErrors && result.batchErrors.length > 0) {
+      const samples = result.batchErrors.slice(0, 5).map((batchError) => {
+        const rowNumber = batchError.offset + 2;
+        const errorCode = batchError.errorNum ? `ORA-${String(batchError.errorNum).padStart(5, "0")}: ` : "";
+        return `row ${rowNumber} (${errorCode}${batchError.message})`;
+      });
+      throw new Error(
+        `Oracle rejected ${result.batchErrors.length} uploaded row(s). Sample errors: ${samples.join("; ")}`,
+      );
+    }
+
+    await connection.commit();
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Database rollback failed:", rollbackError.message);
+      }
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (closeError) {
+        console.error("Database connection close failed:", closeError.message);
+      }
+    }
+  }
+}
+
+app.post("/api/upload", upload.single("file"), async (req, res, next) => {
+  if (!req.file) {
+    res.status(400).json({ error: "Choose a file to upload." });
+    return;
+  }
+
+  let workbook;
+  try {
+    workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+  } catch {
+    res.status(400).json({
+      error: "The uploaded file could not be read. Check that it is a valid Excel or CSV file.",
+    });
+    return;
+  }
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    res.status(400).json({ error: "The uploaded file does not contain a worksheet." });
+    return;
+  }
+
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+  console.log(`Parsed ${rows.length} rows from worksheet "${sheetName}" in file "${req.file.originalname}".`);
+  if (rows.length === 0) {
+    res.status(400).json({ error: "The uploaded worksheet contains no data rows." });
+    return;
+  }
+
+  try {
+    await replaceTableData(rows);
+    res.json({ filename: req.file.originalname, sheetName, rows, inserted: rows.length });
+  } catch (error) {
+    if (error.status === 400 || error.status === 503) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    console.error("Upload database operation failed:", error.message);
+    next(httpError(500, "Database replacement failed; the existing table data was not changed."));
+  }
+});
+
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    res.status(status).json({
+      error: error.code === "LIMIT_FILE_SIZE"
+        ? "The file must be 100 MB or smaller."
+        : "Upload exactly one file.",
+    });
+    return;
+  }
+
+  if (error) {
+    const isUnsupportedFile = error.message.startsWith("Only .xlsx");
+    const status = isUnsupportedFile ? 400 : error.status || 500;
+    res.status(status).json({
+      error: isUnsupportedFile
+        ? error.message
+        : error.status
+          ? error.message
+          : status === 400
+            ? "The uploaded file could not be read. Check that it is a valid Excel or CSV file."
+            : "An unexpected server error occurred.",
+    });
+    return;
+  }
+  next();
+});
+
+app.listen(port, () => {
+  console.log(`Migration API listening on http://localhost:${port}`);
+});
