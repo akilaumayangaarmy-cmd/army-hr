@@ -10,6 +10,18 @@ const port = process.env.PORT || 3001;
 const allowedExtensions = new Set([".xlsx", ".xls", ".csv"]);
 const tableOwner = "PNRDB_DEV";
 const tableName = "01_Temp_members_master_data";
+const masterTables = {
+  districts: { table: "districts", sourceColumn: "DISTRIC_ID" },
+  provinces: { table: "provinces", sourceColumn: "PROVINCE_ID" },
+  gnDivisions: { table: "gn_divisions", sourceColumn: "GN_DIVISION_ID" },
+  banks: { table: "banks", sourceColumn: "BANK_ID" },
+  branches: { table: "branches", sourceColumn: "BRANCH_ID" },
+  races: { table: "races", sourceColumn: "RACE_ID" },
+  religions: { table: "religions", sourceColumn: "RELIGION_ID" },
+  nationalities: { table: "nationalities", sourceColumn: "NATIONALITY" },
+  electorate_divisions: { table: "electorate_divisions", sourceColumn: "ELECTORATE_DIVISION_ID" },
+  
+};
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024, files: 1 },
@@ -43,6 +55,80 @@ function getDatabaseConfig() {
 
 function quoteIdentifier(identifier) {
   return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function checkMasterDataIds(type) {
+  const master = masterTables[type];
+  if (!master) {
+    throw httpError(400, "Choose either District or Provinces.");
+  }
+  const { table: masterTable, sourceColumn } = master;
+
+  const config = getDatabaseConfig();
+  let connection;
+  try {
+    connection = await oracledb.getConnection(config);
+    for (const [targetTable, column] of [
+      [tableName, sourceColumn],
+      [masterTable, "old_id"],
+    ]) {
+      const columnResult = await connection.execute(
+        `SELECT column_name
+           FROM all_tab_columns
+          WHERE owner = :owner
+            AND table_name = :tableName
+            AND column_name = :columnName`,
+        { owner: tableOwner, tableName: targetTable, columnName: column },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      if (columnResult.rows.length === 0) {
+        throw httpError(
+          500,
+          `Column ${column} was not found in ${tableOwner}."${targetTable}".`,
+        );
+      }
+    }
+
+    const qualifiedTempTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
+    const qualifiedMasterTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(masterTable)}`;
+    const result = await connection.execute(
+      `SELECT src.${quoteIdentifier(sourceColumn)} AS "ID",
+              CASE
+                WHEN master."old_id" IS NOT NULL THEN 'MATCHED (Thiyanawa)'
+                ELSE 'UNMATCHED (Nethi ewai)'
+              END AS "STATUS"
+         FROM (
+           SELECT DISTINCT ${quoteIdentifier(sourceColumn)}
+             FROM ${qualifiedTempTable}
+            WHERE ${quoteIdentifier(sourceColumn)} IS NOT NULL
+         ) src
+         LEFT JOIN ${qualifiedMasterTable} master
+           ON src.${quoteIdentifier(sourceColumn)} = master."old_id"
+        ORDER BY TO_CHAR(src.${quoteIdentifier(sourceColumn)})`,
+      {},
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+
+    const rows = result.rows.map((row) => ({
+      id: row.ID,
+      status: row.STATUS,
+    }));
+    return {
+      table: masterTable,
+      total: rows.length,
+      matched: rows.filter((row) => row.status.startsWith("MATCHED")).length,
+      unmatched: rows.filter((row) => row.status.startsWith("UNMATCHED")).length,
+      rows,
+    };
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (closeError) {
+        console.error("Database connection close failed:", closeError.message);
+      }
+    }
+  }
 }
 
 async function upsertTableData(rows) {
@@ -224,6 +310,19 @@ async function upsertTableData(rows) {
     }
   }
 }
+
+app.get("/api/master-data/check/:type", async (req, res, next) => {
+  try {
+    res.json(await checkMasterDataIds(req.params.type));
+  } catch (error) {
+    if (error.status === 400 || error.status === 503) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    console.error("Master data ID check failed:", error.message);
+    next(httpError(500, error.status ? error.message : "Unable to check master data IDs."));
+  }
+});
 
 app.post("/api/upload", upload.single("file"), async (req, res, next) => {
   if (!req.file) {

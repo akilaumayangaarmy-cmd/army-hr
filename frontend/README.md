@@ -5,6 +5,7 @@ A lightweight React application built with Vite, Tailwind CSS, and Lucide‑Reac
 ## Features
 - Drag‑and‑drop (or click) Excel/CSV upload using **react-dropzone**.
 - In‑browser parsing with **SheetJS (xlsx)**.
+- Master-data ID checks for `OLD_ID` values in the temporary members table against the District and Provinces tables.
 - Validation against static master‑data lists (replace with API calls in production).
 - Summary cards showing total, valid and missing records.
 - Table of rows with missing master data and quick **Add** buttons to create new master entries on the fly.
@@ -44,6 +45,13 @@ worksheet must contain an `OLD_ID` column with a unique, non-empty value for
 each row. Other headers must match destination-table column names. The endpoint
 returns the parsed rows and a `processed` count after the database transaction
 succeeds.
+
+`GET /api/master-data/check/district` and
+`GET /api/master-data/check/provinces` compare distinct, non-empty
+`DISTRICT_ID` or `PROVINCE_ID` values in
+`PNRDB_DEV."01_Temp_members_master_data"` with `"old_id"` in the quoted
+`PNRDB_DEV."districts"` or `PNRDB_DEV."provinces"` table. Each response
+contains per-ID `MATCHED`/`UNMATCHED` statuses and summary counts.
 
 ## Project Structure
 ```

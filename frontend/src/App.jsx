@@ -1,7 +1,7 @@
 // src/App.jsx
 import React, { useState, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
-import { Loader2, Upload, AlertCircle, CheckCircle, XCircle, Plus } from "lucide-react";
+import { ArrowLeft, Loader2, Upload, AlertCircle, CheckCircle, XCircle, Plus } from "lucide-react";
 
 // Sample master data – in a real app this would be fetched from the backend
 const masterData = {
@@ -12,14 +12,37 @@ const masterData = {
 };
 
 export default function App() {
-  const [records, setRecords] = useState([]); // all parsed rows
-  const [missing, setMissing] = useState([]); // rows with missing master data
   const [summary, setSummary] = useState({ total: 0, valid: 0, missing: 0 });
   const [loading, setLoading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [uploadSuccess, setUploadSuccess] = useState("");
   const [newMaster, setNewMaster] = useState({ type: "", value: "" });
   const [showModal, setShowModal] = useState(false);
+  const [page, setPage] = useState("migration");
+  const [selectedMaster, setSelectedMaster] = useState("");
+  const [masterCheck, setMasterCheck] = useState(null);
+  const [masterLoading, setMasterLoading] = useState(false);
+  const [masterError, setMasterError] = useState("");
+
+  const checkMasterData = async (type) => {
+    setSelectedMaster(type);
+    setMasterCheck(null);
+    setMasterError("");
+    setMasterLoading(true);
+    try {
+      const response = await fetch(`/api/master-data/check/${type}`);
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Master data check failed.");
+      }
+      setMasterCheck(result);
+    } catch (error) {
+      console.error("Master data check error:", error);
+      setMasterError(error.message || "Unable to check master data IDs.");
+    } finally {
+      setMasterLoading(false);
+    }
+  };
 
   const onDrop = useCallback(async (acceptedFiles, fileRejections) => {
     if (acceptedFiles.length === 0) {
@@ -113,8 +136,120 @@ export default function App() {
 
   return (
     <div className="max-w-5xl mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4 text-army">Army HR Data Migration</h1>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-army">
+          {page === "migration" ? "Army HR Data Migration" : "Check Master Data"}
+        </h1>
+        {page === "migration" ? (
+          <button
+            type="button"
+            onClick={() => setPage("master-data")}
+            className="rounded bg-army px-4 py-2 font-medium text-white hover:bg-army-dark"
+          >
+            Check Master Data
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPage("migration")}
+            className="inline-flex items-center rounded border px-4 py-2 font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <ArrowLeft className="mr-2" size={16} /> Back to migration
+          </button>
+        )}
+      </div>
 
+      {page === "master-data" ? (
+        <section>
+          <p className="mb-4 text-gray-600">
+            Check each distinct OLD_ID in PNRDB_DEV.&quot;01_Temp_members_master_data&quot; against the selected master table.
+          </p>
+          <div className="mb-6 flex flex-wrap gap-3">
+            {[
+              { label: "District", type: "districts" },
+              { label: "Provinces", type: "provinces" },
+              { label: "GN Divisions", type: "gnDivisions" },
+              { label: "Banks", type: "banks" },
+              { label: "Branches", type: "branches" },
+              { label: "Races", type: "races" },
+              { label: "Religions", type: "religions" },
+              { label: "NATIONALITY", type: "nationalities" },
+              { label: "ELECTORATE_DIVISION", type: "electorate_divisions" },
+            ].map(({ label, type }) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => checkMasterData(type)}
+                disabled={masterLoading}
+                className={`rounded px-5 py-2 font-medium ${
+                  selectedMaster === type
+                    ? "bg-army text-white"
+                    : "border border-army text-army hover:bg-army-light"
+                } disabled:cursor-wait disabled:opacity-60`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {masterLoading && (
+            <div role="status" className="mb-4 flex items-center text-army">
+              <Loader2 className="mr-2 animate-spin" size={18} /> Checking IDs…
+            </div>
+          )}
+          {masterError && (
+            <div role="alert" className="mb-4 flex items-center text-red-600">
+              <AlertCircle className="mr-2" size={18} /> {masterError}
+            </div>
+          )}
+          {masterCheck && (
+            <>
+              <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="rounded bg-white p-4 shadow">
+                  <p className="text-sm text-gray-500">IDs checked</p>
+                  <p className="text-xl font-semibold text-army">{masterCheck.total}</p>
+                </div>
+                <div className="rounded bg-white p-4 shadow">
+                  <p className="text-sm text-gray-500">Matched in {masterCheck.table}</p>
+                  <p className="text-xl font-semibold text-green-700">{masterCheck.matched}</p>
+                </div>
+                <div className="rounded bg-white p-4 shadow">
+                  <p className="text-sm text-gray-500">Unmatched in {masterCheck.table}</p>
+                  <p className="text-xl font-semibold text-red-600">{masterCheck.unmatched}</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full rounded bg-white shadow">
+                  <thead className="bg-army-light">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Temporary Master Table ID</th>
+                      <th className="px-4 py-2 text-left">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {masterCheck.rows.length > 0 ? masterCheck.rows.map((row, index) => (
+                      <tr key={`${row.id}-${index}`} className="border-t">
+                        <td className="px-4 py-2 font-mono">{row.id}</td>
+                        <td className={`px-4 py-2 font-medium ${
+                          row.status.startsWith("MATCHED") ? "text-green-700" : "text-red-600"
+                        }`}>
+                          {row.status}
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={2} className="px-4 py-6 text-center text-gray-500">
+                          No non-empty OLD_ID values were found in the temporary table.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      ) : (
+      <>
       {/* Uploader */}
       <section className="mb-6">
         <div
@@ -174,80 +309,7 @@ export default function App() {
           </div>
         </div>
       </section>
-
-      {/* Missing data table */}
-      {missing.length > 0 && (
-        <section className="overflow-x-auto">
-          <table className="min-w-full bg-white shadow rounded">
-            <thead className="bg-army-light">
-              <tr>
-                <th className="px-4 py-2 text-left">Row</th>
-                <th className="px-4 py-2 text-left">Member ID</th>
-                <th className="px-4 py-2 text-left">Missing Fields</th>
-                <th className="px-4 py-2 text-left">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {missing.map((m) => (
-                <tr key={m.index} className="border-t">
-                  <td className="px-4 py-2">{m.index}</td>
-                  <td className="px-4 py-2 font-mono">{m.data["e_number"] || "-"}</td>
-                  <td className="px-4 py-2">
-                    {m.missingFields.map((f) => (
-                      <span
-                        key={f}
-                        className="inline-block mr-2 mb-1 px-2 py-0.5 text-xs bg-red-100 text-red-800 rounded"
-                      >
-                        {f}
-                      </span>
-                    ))}
-                  </td>
-                  <td className="px-4 py-2">
-                    {m.missingFields.map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => openAddMaster(f)}
-                        className="inline-flex items-center mr-2 mb-1 px-2 py-0.5 text-xs bg-army-light text-army rounded hover:bg-army"
-                      >
-                        <Plus className="mr-1" size={12} /> Add {f}
-                      </button>
-                    ))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      {/* Modal for adding master data */}
-      {showModal && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-30">
-          <div className="bg-white rounded-lg shadow-lg p-6 w-96">
-            <h2 className="text-lg font-semibold mb-4">Add new {newMaster.type}</h2>
-            <input
-              type="text"
-              placeholder={`Enter ${newMaster.type} name`}
-              value={newMaster.value}
-              onChange={(e) => setNewMaster({ ...newMaster, value: e.target.value })}
-              className="w-full border rounded px-2 py-1 mb-4"
-            />
-            <div className="flex justify-end space-x-2">
-              <button
-                onClick={() => setShowModal(false)}
-                className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={addMasterEntry}
-                className="px-4 py-2 bg-army text-white rounded hover:bg-army-dark"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
+      </>
       )}
     </div>
   );
