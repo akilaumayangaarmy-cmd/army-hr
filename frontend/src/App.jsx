@@ -23,6 +23,8 @@ export default function App() {
   const [masterCheck, setMasterCheck] = useState(null);
   const [masterLoading, setMasterLoading] = useState(false);
   const [masterError, setMasterError] = useState("");
+ const [records, setRecords] = useState([]);
+ const [missing, setMissing] = useState([]);
 
   const checkMasterData = async (type) => {
     setSelectedMaster(type);
@@ -180,6 +182,8 @@ export default function App() {
               { label: "ELECTORATE_DIVISION", type: "electorate_divisions" },
               { label: "RANK", type: "ranks" },
               { label: "DIVISIONAL_SECRETARIAT", type: "divisional_secretariats" },
+              { label: "GENDER_ID", type: "genders" },
+              { label: "MEMBER_CATEGORY_ID", type: "member_categories" },
             ].map(({ label, type }) => (
               <button
                 key={type}

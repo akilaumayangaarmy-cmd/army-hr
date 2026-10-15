@@ -16,12 +16,15 @@ const masterTables = {
   gnDivisions: { table: "gn_divisions", sourceColumn: "GN_DIVISION_ID" },
   banks: { table: "banks", sourceColumn: "BANK_ID" },
   branches: { table: "branches", sourceColumn: "BRANCH_ID" },
+  member_categories: { table: "member_categories", sourceColumn: "MEMBER_CATEGORY_ID" },
   races: { table: "races", sourceColumn: "RACE_ID" },
   religions: { table: "religions", sourceColumn: "RELIGION_ID" },
   nationalities: { table: "nationalities", sourceColumn: "NATIONALITY" },
   electorate_divisions: { table: "electorate_divisions", sourceColumn: "ELECTORATE_DIVISION_ID" },
   ranks: { table: "ranks", sourceColumn: "RANK" },
   divisional_secretariats: { table: "divisional_secretariats", sourceColumn: "DIVISIONAL_SECRETARIAT" },
+  genders: { table: "genders", sourceColumn: "GENDER_ID" },
+  member_categories: { table: "member_categories", sourceColumn: "MEMBER_CATEGORY_ID" },
 };
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -64,7 +67,7 @@ async function checkMasterDataIds(type) {
     throw httpError(400, "Choose a supported master data table.");
   }
   const { table: masterTable, sourceColumn } = master;
-  const isNameMatch = type === "divisional_secretariats";
+  const isNameMatch = type === "divisional_secretariats"||type === "ranks" || type === "gn_divisions" || type === "electorate_divisions" || type === "genders";
   const masterMatchColumn = isNameMatch ? "name" : "old_id";
 
   const config = getDatabaseConfig();
@@ -103,8 +106,8 @@ async function checkMasterDataIds(type) {
     const result = await connection.execute(
       `SELECT src.${quoteIdentifier(sourceColumn)} AS "ID",
               CASE
-                WHEN master.${quoteIdentifier(masterMatchColumn)} IS NOT NULL THEN 'MATCHED (Thiyanawa)'
-                ELSE 'UNMATCHED (Nethi ewai)'
+                WHEN master.${quoteIdentifier(masterMatchColumn)} IS NOT NULL THEN 'MATCHED'
+                ELSE 'UNMATCHED'
               END AS "STATUS"${matchedColumn}
          FROM (
            SELECT DISTINCT ${quoteIdentifier(sourceColumn)}
