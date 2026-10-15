@@ -20,7 +20,8 @@ const masterTables = {
   religions: { table: "religions", sourceColumn: "RELIGION_ID" },
   nationalities: { table: "nationalities", sourceColumn: "NATIONALITY" },
   electorate_divisions: { table: "electorate_divisions", sourceColumn: "ELECTORATE_DIVISION_ID" },
-  
+  ranks: { table: "ranks", sourceColumn: "RANK" },
+  divisional_secretariats: { table: "divisional_secretariats", sourceColumn: "DIVISIONAL_SECRETARIAT" },
 };
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -60,9 +61,11 @@ function quoteIdentifier(identifier) {
 async function checkMasterDataIds(type) {
   const master = masterTables[type];
   if (!master) {
-    throw httpError(400, "Choose either District or Provinces.");
+    throw httpError(400, "Choose a supported master data table.");
   }
   const { table: masterTable, sourceColumn } = master;
+  const isNameMatch = type === "divisional_secretariats";
+  const masterMatchColumn = isNameMatch ? "name" : "old_id";
 
   const config = getDatabaseConfig();
   let connection;
@@ -70,7 +73,7 @@ async function checkMasterDataIds(type) {
     connection = await oracledb.getConnection(config);
     for (const [targetTable, column] of [
       [tableName, sourceColumn],
-      [masterTable, "old_id"],
+      [masterTable, masterMatchColumn],
     ]) {
       const columnResult = await connection.execute(
         `SELECT column_name
@@ -91,19 +94,25 @@ async function checkMasterDataIds(type) {
 
     const qualifiedTempTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
     const qualifiedMasterTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(masterTable)}`;
+    const joinCondition = isNameMatch
+      ? `UPPER(TRIM(src.${quoteIdentifier(sourceColumn)})) = UPPER(TRIM(master.${quoteIdentifier(masterMatchColumn)}))`
+      : `src.${quoteIdentifier(sourceColumn)} = master.${quoteIdentifier(masterMatchColumn)}`;
+    const matchedColumn = isNameMatch
+      ? `, master.${quoteIdentifier(masterMatchColumn)} AS "MATCHED_NAME"`
+      : "";
     const result = await connection.execute(
       `SELECT src.${quoteIdentifier(sourceColumn)} AS "ID",
               CASE
-                WHEN master."old_id" IS NOT NULL THEN 'MATCHED (Thiyanawa)'
+                WHEN master.${quoteIdentifier(masterMatchColumn)} IS NOT NULL THEN 'MATCHED (Thiyanawa)'
                 ELSE 'UNMATCHED (Nethi ewai)'
-              END AS "STATUS"
+              END AS "STATUS"${matchedColumn}
          FROM (
            SELECT DISTINCT ${quoteIdentifier(sourceColumn)}
              FROM ${qualifiedTempTable}
             WHERE ${quoteIdentifier(sourceColumn)} IS NOT NULL
          ) src
          LEFT JOIN ${qualifiedMasterTable} master
-           ON src.${quoteIdentifier(sourceColumn)} = master."old_id"
+           ON ${joinCondition}
         ORDER BY TO_CHAR(src.${quoteIdentifier(sourceColumn)})`,
       {},
       { outFormat: oracledb.OUT_FORMAT_OBJECT },
@@ -112,9 +121,11 @@ async function checkMasterDataIds(type) {
     const rows = result.rows.map((row) => ({
       id: row.ID,
       status: row.STATUS,
+      ...(isNameMatch ? { matchedName: row.MATCHED_NAME } : {}),
     }));
     return {
       table: masterTable,
+      sourceColumn,
       total: rows.length,
       matched: rows.filter((row) => row.status.startsWith("MATCHED")).length,
       unmatched: rows.filter((row) => row.status.startsWith("UNMATCHED")).length,

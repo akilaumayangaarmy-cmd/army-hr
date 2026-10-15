@@ -134,6 +134,9 @@ export default function App() {
     }
   };
 
+  const isNameCheck = masterCheck?.table === "divisional_secretariats";
+  const masterCheckColumnCount = isNameCheck ? 3 : 2;
+
   return (
     <div className="max-w-5xl mx-auto p-4">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -162,7 +165,7 @@ export default function App() {
       {page === "master-data" ? (
         <section>
           <p className="mb-4 text-gray-600">
-            Check each distinct OLD_ID in PNRDB_DEV.&quot;01_Temp_members_master_data&quot; against the selected master table.
+            Check each distinct source value in PNRDB_DEV.&quot;01_Temp_members_master_data&quot; against the selected master table.
           </p>
           <div className="mb-6 flex flex-wrap gap-3">
             {[
@@ -175,6 +178,8 @@ export default function App() {
               { label: "Religions", type: "religions" },
               { label: "NATIONALITY", type: "nationalities" },
               { label: "ELECTORATE_DIVISION", type: "electorate_divisions" },
+              { label: "RANK", type: "ranks" },
+              { label: "DIVISIONAL_SECRETARIAT", type: "divisional_secretariats" },
             ].map(({ label, type }) => (
               <button
                 key={type}
@@ -193,7 +198,7 @@ export default function App() {
           </div>
           {masterLoading && (
             <div role="status" className="mb-4 flex items-center text-army">
-              <Loader2 className="mr-2 animate-spin" size={18} /> Checking IDs…
+              <Loader2 className="mr-2 animate-spin" size={18} /> Checking values…
             </div>
           )}
           {masterError && (
@@ -205,7 +210,7 @@ export default function App() {
             <>
               <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div className="rounded bg-white p-4 shadow">
-                  <p className="text-sm text-gray-500">IDs checked</p>
+                  <p className="text-sm text-gray-500">Values checked</p>
                   <p className="text-xl font-semibold text-army">{masterCheck.total}</p>
                 </div>
                 <div className="rounded bg-white p-4 shadow">
@@ -221,7 +226,10 @@ export default function App() {
                 <table className="min-w-full rounded bg-white shadow">
                   <thead className="bg-army-light">
                     <tr>
-                      <th className="px-4 py-2 text-left">Temporary Master Table ID</th>
+                      <th className="px-4 py-2 text-left">Temporary {masterCheck.sourceColumn}</th>
+                      {isNameCheck && (
+                        <th className="px-4 py-2 text-left">Divisional Secretariat Table Name</th>
+                      )}
                       <th className="px-4 py-2 text-left">Status</th>
                     </tr>
                   </thead>
@@ -229,6 +237,9 @@ export default function App() {
                     {masterCheck.rows.length > 0 ? masterCheck.rows.map((row, index) => (
                       <tr key={`${row.id}-${index}`} className="border-t">
                         <td className="px-4 py-2 font-mono">{row.id}</td>
+                        {isNameCheck && (
+                          <td className="px-4 py-2">{row.matchedName || "—"}</td>
+                        )}
                         <td className={`px-4 py-2 font-medium ${
                           row.status.startsWith("MATCHED") ? "text-green-700" : "text-red-600"
                         }`}>
@@ -237,8 +248,8 @@ export default function App() {
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={2} className="px-4 py-6 text-center text-gray-500">
-                          No non-empty OLD_ID values were found in the temporary table.
+                        <td colSpan={masterCheckColumnCount} className="px-4 py-6 text-center text-gray-500">
+                          No non-empty {masterCheck.sourceColumn} values were found in the temporary table.
                         </td>
                       </tr>
                     )}
