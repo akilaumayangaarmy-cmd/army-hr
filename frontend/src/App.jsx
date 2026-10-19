@@ -136,8 +136,9 @@ export default function App() {
     }
   };
 
-  const isNameCheck = masterCheck?.table === "divisional_secretariats";
-  const masterCheckColumnCount = isNameCheck ? 3 : 2;
+  const unmatchedRows = masterCheck?.rows.filter((row) =>
+    row.status.startsWith("UNMATCHED"),
+  ) ?? [];
 
   return (
     <div className="max-w-5xl mx-auto p-4">
@@ -212,17 +213,13 @@ export default function App() {
           )}
           {masterCheck && (
             <>
-              <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="rounded bg-white p-4 shadow">
                   <p className="text-sm text-gray-500">Values checked</p>
                   <p className="text-xl font-semibold text-army">{masterCheck.total}</p>
                 </div>
                 <div className="rounded bg-white p-4 shadow">
-                  <p className="text-sm text-gray-500">Matched in {masterCheck.table}</p>
-                  <p className="text-xl font-semibold text-green-700">{masterCheck.matched}</p>
-                </div>
-                <div className="rounded bg-white p-4 shadow">
-                  <p className="text-sm text-gray-500">Unmatched in {masterCheck.table}</p>
+                  <p className="text-sm text-gray-500">Not found in {masterCheck.table}</p>
                   <p className="text-xl font-semibold text-red-600">{masterCheck.unmatched}</p>
                 </div>
               </div>
@@ -231,29 +228,23 @@ export default function App() {
                   <thead className="bg-army-light">
                     <tr>
                       <th className="px-4 py-2 text-left">Temporary {masterCheck.sourceColumn}</th>
-                      {isNameCheck && (
-                        <th className="px-4 py-2 text-left">Divisional Secretariat Table Name</th>
-                      )}
                       <th className="px-4 py-2 text-left">Status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {masterCheck.rows.length > 0 ? masterCheck.rows.map((row, index) => (
+                    {unmatchedRows.length > 0 ? unmatchedRows.map((row, index) => (
                       <tr key={`${row.id}-${index}`} className="border-t">
                         <td className="px-4 py-2 font-mono">{row.id}</td>
-                        {isNameCheck && (
-                          <td className="px-4 py-2">{row.matchedName || "—"}</td>
-                        )}
-                        <td className={`px-4 py-2 font-medium ${
-                          row.status.startsWith("MATCHED") ? "text-green-700" : "text-red-600"
-                        }`}>
+                        <td className="px-4 py-2 font-medium text-red-600">
                           {row.status}
                         </td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan={masterCheckColumnCount} className="px-4 py-6 text-center text-gray-500">
-                          No non-empty {masterCheck.sourceColumn} values were found in the temporary table.
+                        <td colSpan={2} className="px-4 py-6 text-center text-gray-500">
+                          {masterCheck.total === 0
+                            ? `No non-empty ${masterCheck.sourceColumn} values were found in the temporary table.`
+                            : `All ${masterCheck.total} values are available in ${masterCheck.table}.`}
                         </td>
                       </tr>
                     )}
