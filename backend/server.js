@@ -61,6 +61,82 @@ function quoteIdentifier(identifier) {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
 
+async function updateTempMemberLocationIds(connection, oldIds = null, oldIdBindDef = null) {
+  const sourceTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
+  const membersTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier("temp_members")}`;
+  const qualifiedMasterTable = (table) =>
+    `${quoteIdentifier(tableOwner)}.${quoteIdentifier(table)}`;
+  const sourceOldId = oldIds ? ":oldId" : `target.${quoteIdentifier("old_id")}`;
+  const targetFilter = oldIds ? `target.${quoteIdentifier("old_id")} = :oldId AND ` : "";
+  const updateSql = `UPDATE ${membersTable} target
+    SET ${quoteIdentifier("province_id")} = (
+          SELECT province.${quoteIdentifier("id")}
+            FROM ${sourceTable} source
+            JOIN ${qualifiedMasterTable("provinces")} province
+              ON province.${quoteIdentifier("old_id")} = source.${quoteIdentifier("PROVINCE_ID")}
+           WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
+        ),
+        ${quoteIdentifier("district_id")} = (
+          SELECT district.${quoteIdentifier("id")}
+            FROM ${sourceTable} source
+            JOIN ${qualifiedMasterTable("districts")} district
+              ON district.${quoteIdentifier("old_id")} = source.${quoteIdentifier("DISTRIC_ID")}
+           WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
+        ),
+        ${quoteIdentifier("divisional_secretariat_id")} = (
+          SELECT divisional_secretariat.${quoteIdentifier("id")}
+            FROM ${sourceTable} source
+            JOIN ${qualifiedMasterTable("divisional_secretariats")} divisional_secretariat
+              ON UPPER(TRIM(divisional_secretariat.${quoteIdentifier("name")})) =
+                 UPPER(TRIM(source.${quoteIdentifier("DIVISIONAL_SECRETARIAT")}))
+           WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
+        )
+    WHERE ${targetFilter}EXISTS (
+        SELECT 1
+         FROM ${sourceTable} source
+         WHERE source.${quoteIdentifier("OLD_ID")} = target.${quoteIdentifier("old_id")}
+      )`;
+
+  if (oldIds) {
+    await connection.executeMany(
+      updateSql,
+      oldIds.map((oldId) => ({ oldId })),
+      { bindDefs: { oldId: oldIdBindDef } },
+    );
+    return oldIds.length;
+  }
+  const result = await connection.execute(updateSql);
+  return result.rowsAffected;
+}
+
+async function syncTempMemberLocationIds() {
+  const config = getDatabaseConfig();
+  let connection;
+  try {
+    connection = await oracledb.getConnection(config);
+    const rowsAffected = await updateTempMemberLocationIds(connection);
+    await connection.commit();
+    return rowsAffected;
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Database rollback failed:", rollbackError.message);
+      }
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (closeError) {
+        console.error("Database connection close failed:", closeError.message);
+      }
+    }
+  }
+}
+
 async function checkMasterDataIds(type) {
   const master = masterTables[type];
   if (!master) {
@@ -304,6 +380,12 @@ async function upsertTableData(rows) {
       );
     }
 
+    const oldIdBindDef = { type: insertData[oldIdIndex].type };
+    if (insertData[oldIdIndex].maxSize !== undefined) {
+      oldIdBindDef.maxSize = insertData[oldIdIndex].maxSize;
+    }
+    await updateTempMemberLocationIds(connection, oldIds, oldIdBindDef);
+
     await connection.commit();
   } catch (error) {
     if (connection) {
@@ -335,6 +417,20 @@ app.get("/api/master-data/check/:type", async (req, res, next) => {
     }
     console.error("Master data ID check failed:", error.message);
     next(httpError(500, error.status ? error.message : "Unable to check master data IDs."));
+  }
+});
+
+app.post("/api/temp-members/sync-location-ids", async (req, res, next) => {
+  try {
+    const updated = await syncTempMemberLocationIds();
+    res.json({ updated });
+  } catch (error) {
+    if (error.status === 503) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    console.error("Temporary member location sync failed:", error.message);
+    next(httpError(500, "Unable to sync temporary member location IDs."));
   }
 });
 

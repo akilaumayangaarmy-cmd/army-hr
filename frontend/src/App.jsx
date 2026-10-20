@@ -25,6 +25,32 @@ export default function App() {
   const [masterError, setMasterError] = useState("");
  const [records, setRecords] = useState([]);
  const [missing, setMissing] = useState([]);
+  const [locationSyncLoading, setLocationSyncLoading] = useState(false);
+  const [locationSyncError, setLocationSyncError] = useState("");
+  const [locationSyncSuccess, setLocationSyncSuccess] = useState("");
+
+  const syncLocationIds = async () => {
+    setLocationSyncLoading(true);
+    setLocationSyncError("");
+    setLocationSyncSuccess("");
+    try {
+      const response = await fetch("/api/temp-members/sync-location-ids", {
+        method: "POST",
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Location ID sync failed.");
+      }
+      setLocationSyncSuccess(
+        `Location IDs synced for ${result.updated} matching temporary member records.`,
+      );
+    } catch (error) {
+      console.error("Temporary member location sync error:", error);
+      setLocationSyncError(error.message || "Unable to sync location IDs.");
+    } finally {
+      setLocationSyncLoading(false);
+    }
+  };
 
   const checkMasterData = async (type) => {
     setSelectedMaster(type);
@@ -71,7 +97,7 @@ export default function App() {
       }
       validateData(result.rows);
       setUploadSuccess(
-        `${result.processed} records processed: existing OLD_IDs updated and new OLD_IDs inserted. Other records were kept.`,
+        `${result.processed} records processed: existing OLD_IDs updated, new OLD_IDs inserted, and matching location IDs synced. Other records were kept.`,
       );
     } catch (error) {
 
@@ -91,6 +117,7 @@ export default function App() {
     },
     maxSize: 100 * 1024 * 1024,
     multiple: false,
+    disabled: loading || locationSyncLoading,
   });
 
   const validateData = (rows) => {
@@ -258,9 +285,35 @@ export default function App() {
       <>
       {/* Uploader */}
       <section className="mb-6">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={syncLocationIds}
+            disabled={locationSyncLoading || loading}
+            className="inline-flex items-center rounded bg-army px-4 py-2 font-medium text-white hover:bg-army-dark disabled:cursor-wait disabled:opacity-60"
+          >
+            {locationSyncLoading && <Loader2 className="mr-2 animate-spin" size={16} />}
+            {locationSyncLoading ? "Syncing location IDs…" : "Sync temp member location IDs"}
+          </button>
+          <p className="text-sm text-gray-600">
+            Update province, district, and divisional secretariat IDs for matching OLD_ID records.
+          </p>
+        </div>
+        {locationSyncError && (
+          <div role="alert" className="mb-3 flex items-center text-red-600">
+            <AlertCircle className="mr-2" size={18} /> {locationSyncError}
+          </div>
+        )}
+        {locationSyncSuccess && (
+          <div role="status" className="mb-3 flex items-center text-green-700">
+            <CheckCircle className="mr-2" size={18} /> {locationSyncSuccess}
+          </div>
+        )}
         <div
           {...getRootProps()}
-          className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+            loading || locationSyncLoading ? "cursor-wait opacity-60" : "cursor-pointer"
+          } ${
             isDragActive ? "border-army" : "border-gray-300"
           }`}
         >

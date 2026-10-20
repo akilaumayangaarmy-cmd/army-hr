@@ -31,7 +31,11 @@ The app will open automatically at `http://localhost:5173`.
 The backend reads uploaded Excel and CSV files in memory and upserts their rows
 into the configured Oracle table using `OLD_ID` as the unique key. Matching
 members are updated, new `OLD_ID` values are inserted, and existing members not
-present in the upload are never deleted. Uploads are limited to 100 MB.
+present in the upload are never deleted. After each upsert, matching rows in
+`PNRDB_DEV."temp_members"` have their province, district, and divisional
+secretariat UUIDs refreshed from the corresponding master tables. These updates
+are committed or rolled back together with the master-data upsert. Uploads are
+limited to 100 MB.
 
 In a second terminal, start the API:
 ```bash
@@ -45,6 +49,11 @@ worksheet must contain an `OLD_ID` column with a unique, non-empty value for
 each row. Other headers must match destination-table column names. The endpoint
 returns the parsed rows and a `processed` count after the database transaction
 succeeds.
+
+The migration page also provides a **Sync temp member location IDs** button.
+It calls `POST /api/temp-members/sync-location-ids` to refresh location IDs for
+all matching `temp_members` rows from the current master data and reports how
+many records were updated.
 
 `GET /api/master-data/check/district` and
 `GET /api/master-data/check/provinces` compare distinct, non-empty
