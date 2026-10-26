@@ -16,6 +16,7 @@ const masterTables = {
   gnDivisions: { table: "gn_divisions", sourceColumn: "GN_DIVISION_ID" },
   banks: { table: "banks", sourceColumn: "BANK_ID" },
   branches: { table: "branches", sourceColumn: "BRANCH_ID" },
+  member_service_types: { table: "member_service_types", sourceColumn: "MEMBER_SERVICE_TYPE_ID" },
   member_categories: { table: "member_categories", sourceColumn: "MEMBER_CATEGORY_ID" },
   races: { table: "races", sourceColumn: "RACE_ID" },
   religions: { table: "religions", sourceColumn: "RELIGION_ID" },
@@ -63,34 +64,35 @@ function quoteIdentifier(identifier) {
 
 async function updateTempMemberLocationIds(connection, oldIds = null, oldIdBindDef = null) {
   const sourceTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
+  console.log(sourceTable);
   const membersTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier("temp_members")}`;
   const qualifiedMasterTable = (table) =>
     `${quoteIdentifier(tableOwner)}.${quoteIdentifier(table)}`;
   const sourceOldId = oldIds ? ":oldId" : `target.${quoteIdentifier("old_id")}`;
   const targetFilter = oldIds ? `target.${quoteIdentifier("old_id")} = :oldId AND ` : "";
   const updateSql = `UPDATE ${membersTable} target
-    SET ${quoteIdentifier("province_id")} = (
+    SET ${quoteIdentifier("province_id")} = NVL((
           SELECT province.${quoteIdentifier("id")}
             FROM ${sourceTable} source
             JOIN ${qualifiedMasterTable("provinces")} province
               ON province.${quoteIdentifier("old_id")} = source.${quoteIdentifier("PROVINCE_ID")}
            WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
-        ),
-        ${quoteIdentifier("district_id")} = (
+        ), 999999999),
+        ${quoteIdentifier("district_id")} = NVL((
           SELECT district.${quoteIdentifier("id")}
             FROM ${sourceTable} source
             JOIN ${qualifiedMasterTable("districts")} district
               ON district.${quoteIdentifier("old_id")} = source.${quoteIdentifier("DISTRIC_ID")}
            WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
-        ),
-        ${quoteIdentifier("divisional_secretariat_id")} = (
+        ), 999999999),
+        ${quoteIdentifier("divisional_secretariat_id")} = NVL((
           SELECT divisional_secretariat.${quoteIdentifier("id")}
             FROM ${sourceTable} source
             JOIN ${qualifiedMasterTable("divisional_secretariats")} divisional_secretariat
               ON UPPER(TRIM(divisional_secretariat.${quoteIdentifier("name")})) =
                  UPPER(TRIM(source.${quoteIdentifier("DIVISIONAL_SECRETARIAT")}))
            WHERE source.${quoteIdentifier("OLD_ID")} = ${sourceOldId}
-        )
+        ), 999999999)
     WHERE ${targetFilter}EXISTS (
         SELECT 1
          FROM ${sourceTable} source
@@ -137,13 +139,103 @@ async function syncTempMemberLocationIds() {
   }
 }
 
+async function updateTempMemberMasterDataIds(connection) {
+  const sourceTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier(tableName)}`;
+  const membersTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier("temp_members")}`;
+  const qualifiedMasterTable = (table) =>
+    `${quoteIdentifier(tableOwner)}.${quoteIdentifier(table)}`;
+  const missingId = "999999999";
+  const lookupId = (table, sourceColumn, matchColumn) =>
+    `NVL((SELECT MIN(master.${quoteIdentifier("id")})
+            FROM ${qualifiedMasterTable(table)} master
+           WHERE ${matchColumn === "name"
+             ? `UPPER(TRIM(master.${quoteIdentifier(matchColumn)})) = UPPER(TRIM(source.${quoteIdentifier(sourceColumn)}))`
+             : `master.${quoteIdentifier(matchColumn)} = source.${quoteIdentifier(sourceColumn)}`}), ${missingId})`;
+
+  const updateSql = `UPDATE ${membersTable} target
+    SET (
+      ${quoteIdentifier("member_service_type_id")},
+      ${quoteIdentifier("bank_id")},
+      ${quoteIdentifier("branch_id")},
+      ${quoteIdentifier("gender_id")},
+      ${quoteIdentifier("religion_id")},
+      ${quoteIdentifier("member_category_id")},
+      ${quoteIdentifier("nationality")},
+      ${quoteIdentifier("electorate_division_id")},
+      ${quoteIdentifier("rank_id")}
+    ) = (
+      SELECT
+        ${lookupId("member_service_types", "MEMBER_SERVICE_TYPE_ID", "name")},
+        NVL(
+          (SELECT branch.${quoteIdentifier("bank_id")}
+             FROM ${qualifiedMasterTable("branches")} branch
+            WHERE branch.${quoteIdentifier("id")} = (
+              SELECT MIN(branch_match.${quoteIdentifier("id")})
+                FROM ${qualifiedMasterTable("branches")} branch_match
+               WHERE branch_match.${quoteIdentifier("old_id")} = source.${quoteIdentifier("BRANCH_ID")}
+            )),
+          ${lookupId("banks", "BANK_ID", "old_id")}
+        ),
+        ${lookupId("branches", "BRANCH_ID", "old_id")},
+        ${lookupId("genders", "GENDER_ID", "name")},
+        ${lookupId("religions", "RELIGION_ID", "old_id")},
+        ${lookupId("member_categories", "MEMBER_CATEGORY_ID", "old_id")},
+        ${lookupId("nationalities", "NATIONALITY", "old_id")},
+        ${lookupId("electorate_divisions", "ELECTORATE_DIVISION_ID", "name")},
+        ${lookupId("ranks", "RANK", "name")}
+      FROM ${sourceTable} source
+      WHERE source.${quoteIdentifier("OLD_ID")} = target.${quoteIdentifier("old_id")}
+    )
+    WHERE EXISTS (
+      SELECT 1
+        FROM ${sourceTable} source
+       WHERE source.${quoteIdentifier("OLD_ID")} = target.${quoteIdentifier("old_id")}
+    )`;
+
+  const result = await connection.execute(updateSql);
+  return result.rowsAffected;
+}
+
+async function syncTempMemberMasterDataIds() {
+  const config = getDatabaseConfig();
+  let connection;
+  try {
+    connection = await oracledb.getConnection(config);
+    const rowsAffected = await updateTempMemberMasterDataIds(connection);
+    await connection.commit();
+    return rowsAffected;
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Database rollback failed:", rollbackError.message);
+      }
+    }
+    throw error;
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (closeError) {
+        console.error("Database connection close failed:", closeError.message);
+      }
+    }
+  }
+}
+
 async function checkMasterDataIds(type) {
   const master = masterTables[type];
   if (!master) {
     throw httpError(400, "Choose a supported master data table.");
   }
   const { table: masterTable, sourceColumn } = master;
-  const isNameMatch = type === "divisional_secretariats"||type === "ranks" || type === "gn_divisions" || type === "electorate_divisions" || type === "genders";
+  const isNameMatch = type === "divisional_secretariats"
+    || type === "ranks"
+    || type === "gnDivisions"
+    || type === "member_service_types"
+    || type === "electorate_divisions"
+    || type === "genders";
   const masterMatchColumn = isNameMatch ? "name" : "old_id";
 
   const config = getDatabaseConfig();
@@ -431,6 +523,20 @@ app.post("/api/temp-members/sync-location-ids", async (req, res, next) => {
     }
     console.error("Temporary member location sync failed:", error.message);
     next(httpError(500, "Unable to sync temporary member location IDs."));
+  }
+});
+
+app.post("/api/temp-members/sync-master-data-ids", async (req, res, next) => {
+  try {
+    const updated = await syncTempMemberMasterDataIds();
+    res.json({ updated });
+  } catch (error) {
+    if (error.status === 503) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    console.error("Temporary member master data sync failed:", error.message);
+    next(httpError(500, "Unable to sync temporary member master data IDs."));
   }
 });
 

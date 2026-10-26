@@ -28,6 +28,9 @@ export default function App() {
   const [locationSyncLoading, setLocationSyncLoading] = useState(false);
   const [locationSyncError, setLocationSyncError] = useState("");
   const [locationSyncSuccess, setLocationSyncSuccess] = useState("");
+  const [masterDataSyncLoading, setMasterDataSyncLoading] = useState(false);
+  const [masterDataSyncError, setMasterDataSyncError] = useState("");
+  const [masterDataSyncSuccess, setMasterDataSyncSuccess] = useState("");
 
   const syncLocationIds = async () => {
     setLocationSyncLoading(true);
@@ -49,6 +52,29 @@ export default function App() {
       setLocationSyncError(error.message || "Unable to sync location IDs.");
     } finally {
       setLocationSyncLoading(false);
+    }
+  };
+
+  const syncMasterDataIds = async () => {
+    setMasterDataSyncLoading(true);
+    setMasterDataSyncError("");
+    setMasterDataSyncSuccess("");
+    try {
+      const response = await fetch("/api/temp-members/sync-master-data-ids", {
+        method: "POST",
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || "Master data ID sync failed.");
+      }
+      setMasterDataSyncSuccess(
+        `Master data IDs synced for ${result.updated} matching temporary member records. Unmatched values were set to 999999999.`,
+      );
+    } catch (error) {
+      console.error("Temporary member master data sync error:", error);
+      setMasterDataSyncError(error.message || "Unable to sync master data IDs.");
+    } finally {
+      setMasterDataSyncLoading(false);
     }
   };
 
@@ -117,7 +143,7 @@ export default function App() {
     },
     maxSize: 100 * 1024 * 1024,
     multiple: false,
-    disabled: loading || locationSyncLoading,
+    disabled: loading || locationSyncLoading || masterDataSyncLoading,
   });
 
   const validateData = (rows) => {
@@ -204,6 +230,7 @@ export default function App() {
               { label: "GN Divisions", type: "gnDivisions" },
               { label: "Banks", type: "banks" },
               { label: "Branches", type: "branches" },
+              { label: "Member Service Types", type: "member_service_types" },
               { label: "Races", type: "races" },
               { label: "Religions", type: "religions" },
               { label: "NATIONALITY", type: "nationalities" },
@@ -289,7 +316,7 @@ export default function App() {
           <button
             type="button"
             onClick={syncLocationIds}
-            disabled={locationSyncLoading || loading}
+            disabled={locationSyncLoading || masterDataSyncLoading || loading}
             className="inline-flex items-center rounded bg-army px-4 py-2 font-medium text-white hover:bg-army-dark disabled:cursor-wait disabled:opacity-60"
           >
             {locationSyncLoading && <Loader2 className="mr-2 animate-spin" size={16} />}
@@ -309,10 +336,34 @@ export default function App() {
             <CheckCircle className="mr-2" size={18} /> {locationSyncSuccess}
           </div>
         )}
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={syncMasterDataIds}
+            disabled={masterDataSyncLoading || locationSyncLoading || loading}
+            className="inline-flex items-center rounded bg-army px-4 py-2 font-medium text-white hover:bg-army-dark disabled:cursor-wait disabled:opacity-60"
+          >
+            {masterDataSyncLoading && <Loader2 className="mr-2 animate-spin" size={16} />}
+            {masterDataSyncLoading ? "Syncing master data IDs…" : "Sync temp member master data IDs"}
+          </button>
+          <p className="text-sm text-gray-600">
+            Map service type, GN division, bank, branch, gender, religion, category, nationality, electorate division, and rank.
+          </p>
+        </div>
+        {masterDataSyncError && (
+          <div role="alert" className="mb-3 flex items-center text-red-600">
+            <AlertCircle className="mr-2" size={18} /> {masterDataSyncError}
+          </div>
+        )}
+        {masterDataSyncSuccess && (
+          <div role="status" className="mb-3 flex items-center text-green-700">
+            <CheckCircle className="mr-2" size={18} /> {masterDataSyncSuccess}
+          </div>
+        )}
         <div
           {...getRootProps()}
           className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-            loading || locationSyncLoading ? "cursor-wait opacity-60" : "cursor-pointer"
+            loading || locationSyncLoading || masterDataSyncLoading ? "cursor-wait opacity-60" : "cursor-pointer"
           } ${
             isDragActive ? "border-army" : "border-gray-300"
           }`}

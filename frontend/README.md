@@ -55,6 +55,13 @@ It calls `POST /api/temp-members/sync-location-ids` to refresh location IDs for
 all matching `temp_members` rows from the current master data and reports how
 many records were updated.
 
+The **Sync temp member master data IDs** button separately maps the service
+type, GN division, bank, branch, gender, religion, member category, nationality,
+electorate division, and rank fields into `temp_members`. Text values are matched
+case-insensitively against master-table `name` columns; other values are matched
+against `old_id`. The member bank ID is taken from the matched branch when
+available. Missing master-data matches are set to `999999999`.
+
 `GET /api/master-data/check/district` and
 `GET /api/master-data/check/provinces` compare distinct, non-empty
 `DISTRICT_ID` or `PROVINCE_ID` values in
