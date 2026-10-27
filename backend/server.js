@@ -144,19 +144,23 @@ async function updateTempMemberMasterDataIds(connection) {
   const membersTable = `${quoteIdentifier(tableOwner)}.${quoteIdentifier("temp_members")}`;
   const qualifiedMasterTable = (table) =>
     `${quoteIdentifier(tableOwner)}.${quoteIdentifier(table)}`;
-  const missingId = "999999999";
+  const fallbackId = (table) =>
+    `NVL((SELECT MIN(fallback_master.${quoteIdentifier("id")})
+            FROM ${qualifiedMasterTable(table)} fallback_master
+           WHERE fallback_master.${quoteIdentifier("old_id")} = 999999999), 999999999)`;
   const lookupId = (table, sourceColumn, matchColumn) =>
     `NVL((SELECT MIN(master.${quoteIdentifier("id")})
             FROM ${qualifiedMasterTable(table)} master
            WHERE ${matchColumn === "name"
              ? `UPPER(TRIM(master.${quoteIdentifier(matchColumn)})) = UPPER(TRIM(source.${quoteIdentifier(sourceColumn)}))`
-             : `master.${quoteIdentifier(matchColumn)} = source.${quoteIdentifier(sourceColumn)}`}), ${missingId})`;
+             : `master.${quoteIdentifier(matchColumn)} = source.${quoteIdentifier(sourceColumn)}`}), ${fallbackId(table)})`;
 
   const updateSql = `UPDATE ${membersTable} target
     SET (
       ${quoteIdentifier("member_service_type_id")},
       ${quoteIdentifier("bank_id")},
       ${quoteIdentifier("branch_id")},
+     
       ${quoteIdentifier("gender_id")},
       ${quoteIdentifier("religion_id")},
       ${quoteIdentifier("member_category_id")},
@@ -536,7 +540,10 @@ app.post("/api/temp-members/sync-master-data-ids", async (req, res, next) => {
       return;
     }
     console.error("Temporary member master data sync failed:", error.message);
-    next(httpError(500, "Unable to sync temporary member master data IDs."));
+    next(httpError(
+      500,
+      `Unable to sync temporary member master data IDs: ${error.message}`,
+    ));
   }
 });
 
